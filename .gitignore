@@ -2,6 +2,7 @@
 /sql_processor
 /data/*.csv
 .vscode
+.local/
 
 # gemini-cli settings
 .gemini/
