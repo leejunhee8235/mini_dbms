@@ -29,32 +29,30 @@
 
 ```mermaid
 flowchart LR
-    CLI["CLI\nsql_processor"]
-    HTTP["HTTP Client\ncurl / 외부 프로그램"]
+    subgraph IN["입력"]
+        CLI["CLI\nsql_processor"]
+        HTTP["HTTP Client\nPOST /query"]
+    end
 
-    API["API Server\naccept + thread pool"]
-    ROUTER["Router\n/health /query"]
-    FACADE["DB Engine Facade\nlock + 실행 진입점"]
-
+    API["API Server\naccept -> queue -> worker -> router"]
+    FACADE["DB Engine Facade\nlock + 공통 진입점"]
     ENGINE["SQL Engine\ntokenizer -> parser -> executor"]
-    RUNTIME["TableRuntime\n메모리 테이블"]
-    INDEX["B+Tree Index\nid -> row_index"]
-    CSV["CSV Storage\ndata/<table>.csv"]
+
+    subgraph DATA["데이터"]
+        RUNTIME["TableRuntime\nrows + next_id"]
+        INDEX["B+Tree\nid -> row_index"]
+        CSV["CSV\ndata/<table>.csv"]
+    end
 
     RESULT["DbResult"]
-    CLI_OUT["CLI 표 출력"]
-    JSON_OUT["JSON 응답"]
+    OUT["출력\nCLI 표 또는 JSON 응답"]
 
     CLI --> FACADE
-    HTTP --> API --> ROUTER --> FACADE
-
+    HTTP --> API --> FACADE
     FACADE --> ENGINE --> RUNTIME
     RUNTIME --> INDEX
     RUNTIME --> CSV
-    ENGINE --> RESULT
-
-    RESULT --> CLI_OUT
-    RESULT --> JSON_OUT
+    ENGINE --> RESULT --> OUT
 ```
 
 발표 멘트:
@@ -73,20 +71,16 @@ API 서버는 main thread가 요청을 모두 처리하지 않습니다.
 main thread는 연결을 받고, worker thread가 실제 요청을 처리합니다.
 
 ```mermaid
-sequenceDiagram
-    participant Client
-    participant Main as Main Thread
-    participant Queue as Job Queue
-    participant Worker as Worker Thread
-    participant DB as DB Engine
-
-    Client->>Main: TCP 연결 + HTTP 요청
-    Main->>Queue: client_fd 저장
-    Queue->>Worker: client_fd 전달
-    Worker->>Worker: HTTP 파싱 + 라우팅
-    Worker->>DB: SQL 실행
-    DB-->>Worker: DbResult
-    Worker-->>Client: JSON HTTP 응답
+flowchart LR
+    A["1. Client\nHTTP 요청"] --> B["2. Main Thread\naccept"]
+    B --> C["3. Job Queue\nclient_fd 저장"]
+    C --> D["4. Worker Thread\n요청 읽기/파싱"]
+    D --> E{"5. Router"}
+    E -->|GET /health| F["health JSON"]
+    E -->|POST /query| G["DB Engine\nSQL 실행"]
+    G --> H["DbResult"]
+    F --> I["6. HTTP 응답"]
+    H --> I
 ```
 
 구현 위치:
@@ -109,17 +103,16 @@ sequenceDiagram
 이 프로젝트에서는 DB 내부 상태와 cache, 파일을 각각 다른 방식으로 보호했습니다.
 
 ```mermaid
-flowchart TD
-    REQ["여러 API 요청"] --> POOL["Thread Pool"]
-    POOL --> SELECT["SELECT 요청"]
-    POOL --> INSERT["INSERT 요청"]
+flowchart LR
+    REQ["여러 요청"] --> POOL["Thread Pool"]
+    POOL --> TYPE{"SQL 종류"}
 
-    SELECT --> READ["DB read lock"]
-    INSERT --> WRITE["DB write lock"]
+    TYPE -->|SELECT| READ["read lock\n동시 조회 가능"]
+    TYPE -->|INSERT| WRITE["write lock\n상태 변경 직렬화"]
 
-    READ --> DB["TableRuntime / B+Tree"]
+    READ --> DB["공유 DB 상태\nrows / next_id / B+Tree"]
     WRITE --> DB
-    DB --> FILE["CSV file lock"]
+    DB --> FILE["CSV 접근\nflock"]
 ```
 
 | 공유 자원 | 발생 가능한 문제 | 해결 |
@@ -153,16 +146,11 @@ API 서버에서는 출력 문자열보다 **구조화된 실행 결과**가 필
 
 ```mermaid
 flowchart LR
-    SQL["SQL 문자열"]
-    FACADE["db_engine_facade"]
-    EXEC["executor_execute_into_result"]
-    RESULT["DbResult\n공통 결과 객체"]
-    CLI["CLI 렌더링\n표 출력"]
-    API["API 렌더링\nJSON 응답"]
-
-    SQL --> FACADE --> EXEC --> RESULT
-    RESULT --> CLI
-    RESULT --> API
+    A["SQL 문자열"] --> B["db_engine_facade\nAPI와 DB 사이의 문"]
+    B --> C["executor_execute_into_result\n출력하지 않고 실행"]
+    C --> D["DbResult\n구조화된 결과"]
+    D --> E["CLI\n표로 출력"]
+    D --> F["API\nJSON으로 응답"]
 ```
 
 `DbResult`에 담기는 정보:
@@ -184,23 +172,22 @@ SQL은 다음 순서로 처리됩니다.
 
 ```mermaid
 flowchart TD
-    SQL["SQL 문자열"] --> TOK["Tokenizer\nToken 배열 생성"]
-    TOK --> PARSER["Parser\nSqlStatement 생성"]
-    PARSER --> EXEC{"Executor\nSQL 종류 판단"}
+    A["SQL"] --> B["Tokenizer"]
+    B --> C["Parser"]
+    C --> D{"Executor"}
 
-    EXEC -->|INSERT| INSERT["row 추가"]
-    INSERT --> ID["auto increment id"]
-    ID --> IDX["B+Tree에\nid -> row_index 저장"]
-    INSERT --> CSV["CSV append"]
+    D -->|INSERT| E["row 추가\n+ auto id"]
+    E --> F["B+Tree 갱신"]
+    E --> G["CSV 저장"]
 
-    EXEC -->|SELECT WHERE id = n| SEARCH["B+Tree search"]
-    SEARCH --> ROW["row_index로 row 조회"]
+    D -->|SELECT id = n| H["B+Tree search"]
+    D -->|SELECT 기타| I["linear scan"]
 
-    EXEC -->|SELECT 기타 조건| SCAN["linear scan"]
-    SCAN --> ROW
-
-    ROW --> RESULT["DbResult"]
-    CSV --> RESULT
+    H --> J["필요한 row 선택"]
+    I --> J
+    F --> K["DbResult"]
+    G --> K
+    J --> K
 ```
 
 B+Tree 사용 조건:
@@ -258,16 +245,10 @@ curl -i -X POST http://127.0.0.1:8080/query \
 
 ```mermaid
 flowchart LR
-    TEST["make tests"]
-    DB["DB 단위 테스트"]
-    CON["동시성 테스트"]
-    API["API 테스트"]
-    E2E["SQL 통합 테스트"]
-
-    TEST --> DB
-    TEST --> CON
-    TEST --> API
-    TEST --> E2E
+    A["make tests"] --> B["DB\nparser/executor/B+Tree"]
+    A --> C["Concurrency\nthread pool/cache"]
+    A --> D["API\nhealth/query"]
+    A --> E["E2E\n.sql 파일 실행"]
 ```
 
 검증 내용:
@@ -354,4 +335,3 @@ A. 대기하지 않고 `503 Server is busy`를 반환합니다.
 **Q. DELETE는 왜 미지원인가요?**
 
 A. DELETE를 완전히 지원하려면 메모리 rows, row index, B+Tree, CSV를 모두 일관되게 갱신해야 해서 이번 핵심 범위에서는 명확히 미지원 처리했습니다.
-
