@@ -1,5 +1,6 @@
 #include "api_server.h"
 
+#include "thread_pool.h"
 #include "http_parser.h"
 #include "request_router.h"
 #include "response_builder.h"
@@ -257,6 +258,14 @@ static int api_server_handle_client(int client_fd, DbEngine *engine) {
     return status;
 }
 
+static void api_server_worker_handle_client(int client_fd, void *context) {
+    DbEngine *engine;
+
+    engine = (DbEngine *)context;
+    api_server_handle_client(client_fd, engine);
+    close(client_fd);
+}
+
 static int api_server_create_socket(int port) {
     int server_fd;
     int reuse_addr;
@@ -294,8 +303,10 @@ static int api_server_create_socket(int port) {
 
 int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
     int server_fd;
+    ThreadPool pool;
 
-    if (engine == NULL || config == NULL || config->port <= 0) {
+    if (engine == NULL || config == NULL || config->port <= 0 ||
+        config->worker_count <= 0 || config->queue_capacity <= 0) {
         return FAILURE;
     }
 
@@ -309,6 +320,13 @@ int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
     printf("API server listening on port %d\n", config->port);
     fflush(stdout);
 
+    if (thread_pool_init(&pool, config->worker_count, config->queue_capacity,
+                         api_server_worker_handle_client, engine) != SUCCESS) {
+        close(server_fd);
+        fprintf(stderr, "Error: Failed to initialize thread pool.\n");
+        return FAILURE;
+    }
+
     while (1) {
         int client_fd;
 
@@ -318,13 +336,17 @@ int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
                 continue;
             }
             close(server_fd);
+            thread_pool_shutdown(&pool);
             return FAILURE;
         }
 
-        api_server_handle_client(client_fd, engine);
-        close(client_fd);
+        if (thread_pool_submit(&pool, client_fd) != SUCCESS) {
+            api_server_send_json_error(client_fd, 503, "Server is busy.");
+            close(client_fd);
+        }
     }
 
     close(server_fd);
+    thread_pool_shutdown(&pool);
     return SUCCESS;
 }

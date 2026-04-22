@@ -5,6 +5,8 @@
 
 typedef struct {
     int port;
+    int worker_count;
+    int queue_capacity;
 } ApiServerConfig;
 
 /*
