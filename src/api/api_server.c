@@ -21,6 +21,38 @@
 #define API_SERVER_READ_CHUNK 4096
 #define API_SERVER_MAX_REQUEST_SIZE 65536
 
+typedef struct {
+    RequestRouterContext router_context;
+} ApiServerHandlerContext;
+
+static int api_server_is_health_fast_path_request(int client_fd) {
+    char peek_buffer[256];
+    char *line_end;
+    char method[MAX_HTTP_METHOD_LEN];
+    char path[MAX_HTTP_PATH_LEN];
+    char protocol[MAX_HTTP_PROTOCOL_LEN];
+    ssize_t bytes_read;
+
+    bytes_read = recv(client_fd, peek_buffer, sizeof(peek_buffer) - 1, MSG_PEEK);
+    if (bytes_read <= 0) {
+        return 0;
+    }
+
+    peek_buffer[bytes_read] = '\0';
+    line_end = strstr(peek_buffer, "\r\n");
+    if (line_end == NULL) {
+        return 0;
+    }
+    *line_end = '\0';
+
+    if (sscanf(peek_buffer, "%7s %127s %15s", method, path, protocol) != 3) {
+        return 0;
+    }
+
+    return utils_equals_ignore_case(method, "GET") &&
+           strcmp(path, "/health") == 0;
+}
+
 static int api_server_append_bytes(char **buffer, size_t *length, size_t *capacity,
                                    const char *chunk, size_t chunk_length) {
     char *new_buffer;
@@ -216,7 +248,8 @@ static int api_server_send_json_error(int client_fd, int status_code,
     return status;
 }
 
-static int api_server_handle_client(int client_fd, DbEngine *engine) {
+static int api_server_handle_client(int client_fd,
+                                    const RequestRouterContext *router_context) {
     char *raw_request;
     HttpRequest request;
     char *body;
@@ -239,7 +272,7 @@ static int api_server_handle_client(int client_fd, DbEngine *engine) {
     }
     free(raw_request);
 
-    status = route_request(engine, &request, &status_code, &body);
+    status = route_request(router_context, &request, &status_code, &body);
     http_request_free(&request);
     if (status != SUCCESS) {
         free(body);
@@ -259,10 +292,10 @@ static int api_server_handle_client(int client_fd, DbEngine *engine) {
 }
 
 static void api_server_worker_handle_client(int client_fd, void *context) {
-    DbEngine *engine;
+    ApiServerHandlerContext *handler_context;
 
-    engine = (DbEngine *)context;
-    api_server_handle_client(client_fd, engine);
+    handler_context = (ApiServerHandlerContext *)context;
+    api_server_handle_client(client_fd, &handler_context->router_context);
     close(client_fd);
 }
 
@@ -304,11 +337,16 @@ static int api_server_create_socket(int port) {
 int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
     int server_fd;
     ThreadPool pool;
+    ApiServerHandlerContext handler_context;
 
     if (engine == NULL || config == NULL || config->port <= 0 ||
         config->worker_count <= 0 || config->queue_capacity <= 0) {
         return FAILURE;
     }
+
+    memset(&handler_context, 0, sizeof(handler_context));
+    handler_context.router_context.engine = engine;
+    handler_context.router_context.thread_pool = &pool;
 
     server_fd = api_server_create_socket(config->port);
     if (server_fd == FAILURE) {
@@ -321,7 +359,7 @@ int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
     fflush(stdout);
 
     if (thread_pool_init(&pool, config->worker_count, config->queue_capacity,
-                         api_server_worker_handle_client, engine) != SUCCESS) {
+                         api_server_worker_handle_client, &handler_context) != SUCCESS) {
         close(server_fd);
         fprintf(stderr, "Error: Failed to initialize thread pool.\n");
         return FAILURE;
@@ -338,6 +376,12 @@ int api_server_run(DbEngine *engine, const ApiServerConfig *config) {
             close(server_fd);
             thread_pool_shutdown(&pool);
             return FAILURE;
+        }
+
+        if (api_server_is_health_fast_path_request(client_fd)) {
+            api_server_handle_client(client_fd, &handler_context.router_context);
+            close(client_fd);
+            continue;
         }
 
         if (thread_pool_submit(&pool, client_fd) != SUCCESS) {
