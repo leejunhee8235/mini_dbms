@@ -1,0 +1,192 @@
+digraph MiniDbmsArchitecture {
+    graph [
+        rankdir=LR,
+        bgcolor="transparent",
+        pad="0.35",
+        nodesep="0.62",
+        ranksep="0.85",
+        splines=polyline,
+        outputorder=edgesfirst,
+        fontname="Malgun Gothic"
+    ];
+
+    node [
+        shape=rect,
+        style="rounded,filled",
+        penwidth=1.5,
+        fontname="Malgun Gothic",
+        fontsize=15,
+        margin="0.13,0.09",
+        color="#64748b",
+        fillcolor="#ffffff"
+    ];
+
+    edge [
+        color="#475569",
+        penwidth=1.7,
+        arrowsize=0.75,
+        fontname="Malgun Gothic",
+        fontsize=12
+    ];
+
+    subgraph cluster_input {
+        label="1. 입력";
+        style="rounded,filled";
+        color="#bfdbfe";
+        fillcolor="#eff6ff";
+        fontname="Malgun Gothic";
+        fontsize=17;
+        penwidth=1.8;
+
+        cli [
+            label="CLI\nsql_processor\nREPL / .sql 파일",
+            fillcolor="#dbeafe",
+            color="#3b82f6"
+        ];
+
+        http [
+            label="HTTP Client\ncurl / 외부 프로그램\nPOST /query",
+            fillcolor="#dbeafe",
+            color="#3b82f6"
+        ];
+    }
+
+    subgraph cluster_api {
+        label="2. API 서버";
+        style="rounded,filled";
+        color="#bae6fd";
+        fillcolor="#ecfeff";
+        fontname="Malgun Gothic";
+        fontsize=17;
+        penwidth=1.8;
+
+        accept [
+            label="accept loop\n클라이언트 연결 수락",
+            fillcolor="#cffafe",
+            color="#0891b2"
+        ];
+
+        pool [
+            label="thread pool\njob queue + worker",
+            fillcolor="#cffafe",
+            color="#0891b2"
+        ];
+
+        router [
+            label="request router\n/health /query 분기",
+            fillcolor="#cffafe",
+            color="#0891b2"
+        ];
+    }
+
+    facade [
+        label="DB Engine Facade\nlock 획득 + SQL 실행 진입점",
+        fillcolor="#dcfce7",
+        color="#16a34a",
+        penwidth=2.2
+    ];
+
+    subgraph cluster_engine {
+        label="3. 공통 SQL 엔진";
+        style="rounded,filled";
+        color="#bbf7d0";
+        fillcolor="#f0fdf4";
+        fontname="Malgun Gothic";
+        fontsize=17;
+        penwidth=1.8;
+
+        tokenizer [
+            label="Tokenizer\nSQL -> Token 배열",
+            fillcolor="#dcfce7",
+            color="#16a34a"
+        ];
+
+        parser [
+            label="Parser\nToken -> SqlStatement",
+            fillcolor="#dcfce7",
+            color="#16a34a"
+        ];
+
+        executor [
+            label="Executor\nINSERT / SELECT 실행",
+            fillcolor="#dcfce7",
+            color="#16a34a"
+        ];
+    }
+
+    subgraph cluster_data {
+        label="4. 데이터 계층";
+        style="rounded,filled";
+        color="#fed7aa";
+        fillcolor="#fff7ed";
+        fontname="Malgun Gothic";
+        fontsize=17;
+        penwidth=1.8;
+
+        runtime [
+            label="TableRuntime\n메모리 rows + next_id",
+            fillcolor="#ffedd5",
+            color="#ea580c"
+        ];
+
+        bptree [
+            label="B+Tree Index\nid -> row_index",
+            fillcolor="#ffedd5",
+            color="#ea580c"
+        ];
+
+        csv [
+            label="CSV Storage\ndata/<table>.csv",
+            fillcolor="#ffedd5",
+            color="#ea580c"
+        ];
+    }
+
+    result [
+        label="DbResult\n구조화된 실행 결과",
+        fillcolor="#fce7f3",
+        color="#db2777",
+        penwidth=2.0
+    ];
+
+    subgraph cluster_output {
+        label="5. 출력";
+        style="rounded,filled";
+        color="#fbcfe8";
+        fillcolor="#fdf2f8";
+        fontname="Malgun Gothic";
+        fontsize=17;
+        penwidth=1.8;
+
+        cliout [
+            label="CLI 표 출력",
+            fillcolor="#fce7f3",
+            color="#db2777"
+        ];
+
+        jsonout [
+            label="JSON HTTP 응답",
+            fillcolor="#fce7f3",
+            color="#db2777"
+        ];
+    }
+
+    cli -> facade [label="SQL 전달"];
+    http -> accept;
+    accept -> pool;
+    pool -> router;
+    router -> facade [label="SQL 추출"];
+
+    facade -> tokenizer;
+    tokenizer -> parser;
+    parser -> executor;
+
+    executor -> runtime;
+    runtime -> bptree [label="id 인덱스"];
+    runtime -> csv [label="영구 저장"];
+    executor -> result;
+
+    result -> cliout;
+    result -> jsonout;
+
+}

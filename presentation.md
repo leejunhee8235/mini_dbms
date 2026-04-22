@@ -27,35 +27,9 @@
 
 발표에서는 이 그림 하나로 전체 구조를 먼저 설명하면 됩니다.
 
-```mermaid
-flowchart LR
-    CLI["CLI\nsql_processor"]
-    HTTP["HTTP Client\ncurl / 외부 프로그램"]
+![전체 아키텍처 흐름도](docs/diagrams/architecture.svg)
 
-    API["API Server\naccept + thread pool"]
-    ROUTER["Router\n/health /query"]
-    FACADE["DB Engine Facade\nlock + 실행 진입점"]
-
-    ENGINE["SQL Engine\ntokenizer -> parser -> executor"]
-    RUNTIME["TableRuntime\n메모리 테이블"]
-    INDEX["B+Tree Index\nid -> row_index"]
-    CSV["CSV Storage\ndata/<table>.csv"]
-
-    RESULT["DbResult"]
-    CLI_OUT["CLI 표 출력"]
-    JSON_OUT["JSON 응답"]
-
-    CLI --> FACADE
-    HTTP --> API --> ROUTER --> FACADE
-
-    FACADE --> ENGINE --> RUNTIME
-    RUNTIME --> INDEX
-    RUNTIME --> CSV
-    ENGINE --> RESULT
-
-    RESULT --> CLI_OUT
-    RESULT --> JSON_OUT
-```
+DOT 원본: [`docs/diagrams/architecture.dot`](docs/diagrams/architecture.dot)
 
 발표 멘트:
 
