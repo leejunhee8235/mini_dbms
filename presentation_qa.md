@@ -1,84 +1,132 @@
-# Mini DBMS API Server 발표 예상 질문 & 답변
+# Mini DBMS API Server 발표 Q&A
 
-이 문서는 목요일 발표 QnA 대비용입니다.
-답변은 실제 현재 프로젝트 구현 기준으로 작성했습니다.
+이 문서는 발표 Q&A 대비용입니다. 답변은 현재 프로젝트 구현 기준으로 정리했습니다.
+
+발표장에서 답변할 때는 먼저 짧게 결론을 말하고, 이어서 “우리 코드에서는 어떻게 되어 있는지”를 함수명과 함께 설명하면 좋습니다.
 
 ## 0. 10초 요약 답변
 
-**Q. 이번 프로젝트 한 문장으로 설명하면?**
+**Q. 이번 프로젝트를 한 문장으로 설명하면?**
 
-A. C로 만든 미니 SQL 처리기에 HTTP API 서버, thread pool, 동시성 lock, B+Tree 기반 `id` 인덱스를 붙여서 외부 클라이언트가 SQL을 API로 실행할 수 있게 만든 프로젝트입니다.
+A. 기존 C 기반 SQL 처리기와 B+Tree 인덱스를 재사용해서, 외부 클라이언트가 HTTP API로 SQL을 실행할 수 있는 멀티스레드 미니 DBMS 서버를 만든 프로젝트입니다.
 
-**꼬리질문: 핵심 구현은 어디인가요?**
+**꼬리질문: 핵심 구현은 무엇인가요?**
 
-A. 핵심은 세 부분입니다.
+A. 핵심은 세 가지입니다.
 
-- API 서버: socket accept, HTTP request 읽기, route 처리, JSON 응답 생성
-- 병렬 처리: thread pool과 bounded job queue
-- DB 엔진 연결: `db_engine_facade`가 tokenizer, parser, executor, table runtime, B+Tree를 하나로 묶음
+- `GET /health`, `POST /query`를 제공하는 TCP/HTTP API 서버
+- `ThreadPool + JobQueue`로 요청을 병렬 처리하는 구조
+- `db_engine_facade`와 `DbResult`로 API 서버와 내부 DB 엔진을 분리한 구조
 
-## 1. 과제 요구사항 매핑
+## 1. 과제 요구사항과 우리 구현 매핑
 
 **Q. 과제 요구사항 중 무엇을 구현했나요?**
 
-A. 요구사항 기준으로 보면 다음을 구현했습니다.
+A. 요구사항 기준으로 다음을 구현했습니다.
 
-- 외부 클라이언트용 API 서버: `GET /health`, `POST /query`
-- SQL 요청 병렬 처리: thread pool + job queue
-- 기존 SQL 처리기 활용: tokenizer, parser, executor 재사용
-- B+Tree 인덱스 활용: `WHERE id = ?` 조회에서 B+Tree 사용
-- C 언어 구현: 전체 서버/DB 엔진 C99
-- 테스트: DB 단위 테스트, 동시성 테스트, API smoke/concurrency 테스트
+| 과제 요구사항 | 우리 프로젝트 구현 |
+| --- | --- |
+| 미니 DBMS API 서버 | `src/api`의 socket 기반 HTTP API 서버 |
+| 외부 클라이언트에서 DBMS 사용 | `POST /query`로 SQL 실행 가능 |
+| 스레드 풀 구성 | `src/concurrency/thread_pool.c` |
+| 요청마다 스레드 할당 | 요청을 queue에 넣고 worker thread가 가져가 처리 |
+| SQL 처리기 재사용 | `tokenizer -> parser -> executor` 재사용 |
+| B+Tree 인덱스 활용 | `SELECT ... WHERE id = n`에서 `bptree_search` 사용 |
+| C 언어 구현 | Makefile 기반 C99, pthread 사용 |
+| 테스트 | DB 단위 테스트, concurrency 테스트, API smoke/concurrency 테스트 |
+| 엣지 케이스 고려 | 잘못된 route/method/body, queue full, explicit id, unsupported DELETE 등 |
 
 **꼬리질문: 발표에서 가장 강조할 차별점은?**
 
-A. 단순히 API를 붙인 것이 아니라, 기존 stdout 중심 executor를 `DbResult`라는 구조화된 결과로 바꾸어 CLI와 API가 같은 실행 결과를 공유하도록 만든 점입니다. 또 API 응답에 `"used_id_index": true/false`를 넣어서 실제 B+Tree 인덱스 사용 여부를 검증 가능하게 했습니다.
+A. 단순히 SQL 처리기에 HTTP만 붙인 것이 아니라, API 서버와 DB 엔진 사이를 `DbResult`라는 구조화된 결과 객체로 분리했고, thread pool, rwlock, tokenizer cache mutex, file lock까지 넣어 멀티스레드 환경에서 동작하도록 설계한 점입니다.
 
-## 2. 전체 아키텍처
+## 2. 기본 개념 질문
+
+**Q. DBMS가 정확히 뭔가요?**
+
+A. DBMS는 Database Management System의 약자로, 데이터를 저장하고 SQL 같은 질의 언어로 조회/삽입/수정/삭제할 수 있게 해주는 시스템입니다. 우리 프로젝트는 MySQL 같은 완성형 DB는 아니고, SQL 파싱, 실행, 저장, 인덱스, API 서버를 작게 구현한 mini DBMS입니다.
+
+**Q. API 서버는 뭔가요?**
+
+A. 외부 프로그램이 정해진 방식으로 기능을 호출할 수 있게 열어둔 서버입니다. 우리 프로젝트에서는 클라이언트가 HTTP 요청으로 SQL을 보내면 서버가 DB 엔진을 실행하고 JSON 응답을 돌려줍니다.
+
+**Q. TCP는 뭔가요?**
+
+A. TCP는 인터넷에서 데이터를 안정적으로 주고받기 위한 연결 기반 통신 방식입니다. HTTP 요청도 보통 TCP 연결 위에서 오갑니다. 우리 서버는 `socket`, `bind`, `listen`, `accept`를 사용해서 TCP 연결을 받고 그 위에서 HTTP 요청을 읽습니다.
+
+**Q. HTTP는 뭔가요?**
+
+A. 클라이언트와 서버가 요청과 응답을 주고받는 규칙입니다. 예를 들어 `GET /health`는 서버 상태를 묻는 요청이고, `POST /query`는 SQL을 body에 담아 보내는 요청입니다.
+
+**Q. CLI와 REPL은 뭔가요?**
+
+A. CLI는 Command Line Interface, 즉 터미널에서 명령어로 프로그램을 쓰는 방식입니다. REPL은 Read-Eval-Print Loop의 약자로, 사용자가 한 줄씩 입력하면 읽고 실행하고 결과를 출력한 뒤 다시 입력을 기다리는 방식입니다. 우리 CLI는 `./sql_processor`를 실행하면 `SQL>` 프롬프트가 뜨고, `.sql` 파일을 넘기면 파일 안의 SQL을 실행합니다.
+
+**Q. Thread Pool이 뭔가요?**
+
+A. 요청이 올 때마다 새 thread를 만들지 않고, 미리 worker thread들을 만들어 둔 뒤 요청을 queue에 넣고 worker가 하나씩 가져가 처리하는 구조입니다. thread 생성 비용과 무제한 thread 증가를 막을 수 있습니다.
+
+**Q. Bounded Queue는 뭔가요?**
+
+A. 크기가 제한된 queue입니다. 우리 서버는 queue capacity를 정해두고, queue가 가득 차면 더 기다리지 않고 `503 Server is busy`를 반환합니다. 이것은 서버가 과부하 상황에서 무한히 요청을 쌓지 않도록 하는 backpressure입니다.
+
+**Q. Mutex와 RWLock은 뭐가 다른가요?**
+
+A. mutex는 한 번에 하나의 thread만 들어오게 막는 lock입니다. rwlock은 읽기 작업은 여러 thread가 동시에 들어올 수 있고, 쓰기 작업은 단독으로 들어오게 하는 lock입니다. 우리 프로젝트는 SELECT는 read lock, INSERT/DELETE 계열은 write lock 경로를 사용합니다.
+
+**Q. Projection이 뭔가요?**
+
+A. SELECT 결과에서 필요한 컬럼만 골라내는 과정입니다. 예를 들어 `SELECT name FROM users`라면 전체 row에서 `name` 컬럼만 결과로 복사합니다. 우리 코드에서는 `executor_prepare_projection`, `executor_copy_projected_row`가 이 역할을 합니다.
+
+## 3. 전체 아키텍처 질문
 
 **Q. 전체 흐름을 설명해 주세요.**
 
-A. 외부 요청 기준 흐름은 다음과 같습니다.
+A. API 기준 흐름은 다음과 같습니다.
 
 ```text
-client
--> api_server accept
+Client
+-> TCP 연결
+-> api_server_run accept loop
 -> thread_pool_submit
+-> JobQueue
 -> worker thread
--> HTTP parser
--> request router
--> db_engine_facade
--> tokenizer
--> parser
--> executor
--> table_runtime / B+Tree / storage
+-> api_server_read_http_request
+-> parse_http_request
+-> route_request
+-> execute_query_with_lock
+-> db_execute_sql
+-> tokenizer -> parser -> executor
+-> TableRuntime / B+Tree / CSV storage
 -> DbResult
--> JSON response
--> client
+-> JSON HTTP response
+-> Client
 ```
 
-**꼬리질문: 왜 `db_engine_facade`가 필요한가요?**
+**Q. CLI와 API는 서로 다른 엔진을 쓰나요?**
 
-A. API 서버가 tokenizer, parser, executor 내부 구조를 직접 알면 결합도가 커집니다. `db_engine_facade`는 SQL 문자열 하나를 받아 `DbResult`를 반환하는 단일 진입점 역할을 하므로, API 서버는 DB 내부 구현을 몰라도 SQL 실행 결과를 받을 수 있습니다.
+A. 아닙니다. 둘 다 같은 DB 엔진 경로를 사용합니다. CLI는 `db_execute_sql` 결과를 `executor_render_result_for_cli`로 터미널 출력하고, API는 `execute_query_with_lock` 결과를 `build_query_json_response`로 JSON 응답으로 바꿉니다.
 
-**꼬리질문: CLI와 API는 같은 DB 엔진을 쓰나요?**
+**Q. 왜 `db_engine_facade`를 만들었나요?**
 
-A. 네. CLI는 `db_execute_sql`을 호출하고 결과를 `executor_render_result_for_cli`로 출력합니다. API는 `execute_query_with_lock`을 호출하고 결과를 `build_query_json_response`로 JSON 변환합니다. 실행 엔진은 공유하고 표현 방식만 다릅니다.
+A. API 서버가 tokenizer, parser, executor 내부 구조를 직접 알게 되면 결합도가 커집니다. 그래서 API 서버는 SQL 문자열을 넘기고 `DbResult`만 받도록 `db_engine_facade`를 만들었습니다. 이 덕분에 CLI와 API가 같은 실행 엔진을 공유하면서도 출력 방식만 다르게 가져갈 수 있습니다.
 
-## 3. API 서버
+**꼬리질문: `DbResult`에는 무엇이 들어가나요?**
 
-**Q. API 엔드포인트는 무엇인가요?**
+A. 성공 여부, 결과 타입, 메시지, SELECT 컬럼 목록, SELECT row 목록, row count, affected rows, B+Tree 인덱스 사용 여부인 `used_id_index`가 들어갑니다.
+
+## 4. API 서버 질문
+
+**Q. API endpoint는 무엇이 있나요?**
 
 A. 두 개입니다.
 
-- `GET /health`: 서버 상태 확인, `{"status":"ok"}` 반환
-- `POST /query`: JSON body의 `sql` 문자열을 실행
+| Method | Path | 역할 |
+| --- | --- | --- |
+| `GET` | `/health` | 서버 상태, worker/queue 상태 확인 |
+| `POST` | `/query` | JSON body의 `sql`을 실행 |
 
-예시:
-
-```bash
-curl -i http://127.0.0.1:8080/health
-```
+**Q. `/query` 요청 예시는?**
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/query \
@@ -86,114 +134,119 @@ curl -i -X POST http://127.0.0.1:8080/query \
   --data '{"sql":"SELECT id, name FROM users WHERE id = 1;"}'
 ```
 
-**꼬리질문: 왜 JSON body를 `{"sql":"..."}`로 단순화했나요?**
+**Q. `/health`는 무엇을 반환하나요?**
 
-A. 과제 핵심은 DBMS 기능을 API로 노출하고 병렬 처리하는 것입니다. 그래서 MVP에서는 request schema를 단순하게 고정했습니다. 확장한다면 query id, timeout, transaction option 등을 body에 추가할 수 있습니다.
+A. 서버 생존 여부뿐 아니라 thread pool과 queue 상태도 반환합니다.
 
-**Q. HTTP 처리는 어떤 수준까지 구현했나요?**
+```json
+{
+  "status": "ok",
+  "worker_count": 4,
+  "busy_workers": 0,
+  "idle_workers": 4,
+  "queue_length": 0,
+  "queue_capacity": 16,
+  "available_queue_slots": 16
+}
+```
 
-A. 완전한 범용 HTTP 서버가 아니라 과제용 MVP 서버입니다. request line, path, method, `Content-Length`, body를 읽고, 응답은 `HTTP/1.1`, `Content-Type: application/json`, `Content-Length`, `Connection: close`를 붙여 보냅니다.
+**꼬리질문: 왜 `/health`에 worker와 queue 상태를 넣었나요?**
 
-**꼬리질문: keep-alive는 지원하나요?**
+A. 단순히 서버가 살아 있는지만 보는 것보다, 현재 부하가 worker 부족인지 queue 포화인지 확인할 수 있어야 하기 때문입니다. 특히 부하 테스트에서 병목을 설명할 때 `busy_workers`, `queue_length`, `available_queue_slots`가 유용합니다.
 
-A. 지원하지 않습니다. 응답에 `Connection: close`를 넣고 요청 하나 처리 후 socket을 닫습니다. 구현 범위를 줄이고 동시성 검증을 명확히 하기 위한 선택입니다.
+**꼬리질문: `/health` fast path는 왜 넣었나요?**
+
+A. queue가 꽉 찬 상황에서도 서버 상태를 관찰할 수 있게 하기 위해서입니다. `api_server_is_health_fast_path_request`가 `GET /health`를 먼저 확인하고, 이 요청은 queue에 넣지 않고 바로 처리합니다. 실제 SQL 실행 요청인 `/query`는 thread pool을 통해 처리됩니다.
+
+**Q. HTTP 처리는 어디까지 구현했나요?**
+
+A. 범용 웹서버 수준은 아니고 과제에 필요한 MVP 수준입니다. request line, method, path, `Content-Length`, body를 읽고, 응답은 JSON body와 함께 `HTTP/1.1`, `Content-Type`, `Content-Length`, `Connection: close`를 붙여 보냅니다.
+
+**꼬리질문: keep-alive를 지원하나요?**
+
+A. 지원하지 않습니다. 요청 하나를 처리한 뒤 `Connection: close`로 소켓을 닫습니다. 과제의 핵심은 DBMS API, thread pool, 동시성 제어이므로 연결 재사용보다는 구현 범위를 명확히 했습니다.
 
 **Q. 잘못된 요청은 어떻게 처리하나요?**
 
-A. 잘못된 HTTP request는 400, 잘못된 method는 405, 없는 route는 404, queue가 가득 찬 경우는 503, 내부 응답 생성 실패는 500으로 JSON 에러를 반환합니다.
+A. 잘못된 HTTP 요청이나 JSON body는 400, 없는 route는 404, 잘못된 method는 405, queue full은 503, 내부 응답 생성 실패는 500 계열로 JSON error를 반환합니다.
 
-## 4. Thread Pool
+## 5. Thread Pool과 병렬 처리 질문
 
-**Q. Thread pool이 뭔가요?**
+**Q. 요청마다 thread를 새로 만드나요?**
 
-A. 요청이 들어올 때마다 thread를 새로 만들지 않고, 미리 worker thread들을 만들어 둔 뒤 요청을 queue에 넣고 worker가 하나씩 가져가 처리하는 구조입니다.
+A. 아닙니다. 미리 만든 worker thread를 재사용합니다. main thread는 `accept`로 client socket을 받고 `thread_pool_submit`으로 queue에 넣습니다. worker는 `queue_pop`으로 socket fd를 가져와 요청을 처리합니다.
 
-**꼬리질문: 왜 요청마다 thread를 새로 만들지 않았나요?**
-
-A. 매 요청마다 thread를 생성하면 생성/소멸 비용이 크고, 요청이 몰릴 때 thread 수가 무한히 늘어날 수 있습니다. thread pool은 worker 수와 queue 용량을 제한해서 서버 자원 사용량을 예측 가능하게 만듭니다.
-
-**Q. 이 프로젝트의 thread pool 흐름은?**
-
-A.
+**Q. Thread pool 흐름을 함수명으로 설명하면?**
 
 ```text
 api_server_run
--> accept client_fd
+-> accept
 -> thread_pool_submit
 -> queue_push
--> worker thread가 queue_pop
+-> thread_pool_worker_main
+-> queue_pop
 -> api_server_worker_handle_client
--> 요청 처리 후 close(client_fd)
+-> api_server_handle_client
+-> close(client_fd)
 ```
 
-**꼬리질문: queue가 꽉 차면 어떻게 하나요?**
+**Q. 왜 thread pool을 썼나요?**
 
-A. blocking하지 않고 즉시 실패합니다. API 서버는 해당 client에게 `503 Server is busy.` JSON 응답을 보내고 socket을 닫습니다. 이것은 서버가 과부하일 때 무한 대기하지 않도록 하는 backpressure입니다.
+A. 요청마다 thread를 만들면 생성/정리 비용이 크고, 요청 폭주 시 thread 수가 무제한으로 늘 수 있습니다. thread pool은 worker 수와 queue 크기를 제한해서 서버 자원 사용량을 예측 가능하게 만듭니다.
 
-**Q. worker thread 수는 어떻게 설정하나요?**
+**Q. queue가 꽉 차면 어떻게 되나요?**
 
-A. 기본은 `4`개이고 실행 인자로 바꿀 수 있습니다.
+A. `queue_push`가 실패하고, API 서버는 해당 client에게 `503 Server is busy`를 보낸 뒤 소켓을 닫습니다. 대기열을 무한히 늘리지 않는 것이 과부하 상황에서 더 안전합니다.
 
-```bash
-./api_server 8080 4 16
-```
+**Q. queue는 thread-safe한가요?**
 
-여기서 `8080`은 port, `4`는 worker 수, `16`은 queue capacity입니다.
+A. 네. `JobQueue`는 circular buffer이고, `queue_push`, `queue_pop`에서 `pthread_mutex_t`로 `head`, `tail`, `count`를 보호합니다. worker가 기다릴 때는 `pthread_cond_t not_empty`를 사용합니다.
 
-## 5. 동시성 이슈
+**꼬리질문: worker 상태 통계는 race condition 없이 읽나요?**
 
-**Q. 이 프로젝트에서 동시성 이슈가 생길 수 있는 지점은?**
+A. `thread_pool_get_stats`가 queue mutex를 잡은 상태에서 `active_worker_count`, `queue.count`, `queue.capacity`를 읽습니다. worker가 active count를 증가/감소할 때도 같은 mutex를 사용합니다.
 
-A. 대표적으로 네 곳입니다.
+## 6. 멀티스레드 동시성 질문
 
-- `TableRuntime`: 전역 활성 테이블, rows, `next_id`, B+Tree root를 공유
-- `B+Tree`: INSERT 시 구조가 바뀔 수 있음
-- `tokenizer cache`: 전역 linked list cache
-- CSV storage: 여러 요청이 같은 파일을 읽고 쓸 수 있음
+**Q. 이 프로젝트에서 race condition이 생길 수 있는 공유 자원은 무엇인가요?**
 
-**Q. 동시성 문제를 어떻게 막았나요?**
+A. 대표적으로 다음이 있습니다.
 
-A. 두 레벨로 막았습니다.
+| 공유 자원 | 위험 | 보호 방식 |
+| --- | --- | --- |
+| `TableRuntime.rows` | INSERT 중 배열 변경 | DB write lock |
+| `next_id` | 동시 INSERT 시 id 중복 | DB write lock |
+| B+Tree root/node | insert 중 tree 구조 변경 | DB write lock |
+| SELECT | 읽기 병렬화 필요 | DB read lock |
+| tokenizer cache | 전역 cache list 변경 | tokenizer cache mutex |
+| CSV file | 동시 파일 읽기/쓰기 | `flock` file lock |
+| JobQueue | head/tail/count 경쟁 | queue mutex |
 
-- DB 엔진 내부 상태는 `lock_manager`의 DB lock으로 보호합니다.
-- tokenizer cache는 별도 mutex로 보호합니다.
-- storage 파일 접근은 `flock`으로 파일 lock을 겁니다.
+**Q. DB lock 정책은 어떻게 되나요?**
 
-**꼬리질문: DB lock은 mutex인가요 rwlock인가요?**
+A. `init_lock_manager(LOCK_POLICY_SPLIT_RWLOCK)`로 초기화하고, `execute_query_with_lock`에서 SQL을 먼저 파싱해서 lock mode를 정합니다. SELECT는 read lock, INSERT/DELETE는 write lock입니다.
 
-A. 현재 `db_engine_init`에서 `LOCK_POLICY_SPLIT_RWLOCK`으로 초기화합니다. 그래서 SELECT는 read lock, INSERT/DELETE는 write lock을 사용합니다. 다만 SELECT라도 아직 table이 memory에 load되지 않은 경우에는 상태를 바꾸므로 write lock으로 승격합니다.
+**꼬리질문: SELECT는 항상 read lock인가요?**
 
-**꼬리질문: read lock에서 write lock으로 바로 upgrade하면 deadlock 위험이 있지 않나요?**
+A. 대부분은 read lock입니다. 다만 아직 해당 table이 memory runtime에 load되지 않았다면 SELECT라도 CSV를 읽고 `TableRuntime`과 B+Tree를 구성해야 하므로 상태 변경이 발생합니다. 이 경우 read lock을 풀고 write lock으로 다시 잡습니다.
 
-A. 직접 upgrade하지 않고 read lock을 먼저 풀고 write lock을 다시 잡습니다. 그래서 upgrade deadlock을 피합니다. 그 사이 다른 thread가 먼저 table을 load할 수 있지만, 이후 실행 단계에서 다시 상태를 확인하므로 안전합니다.
+**꼬리질문: read lock에서 write lock으로 바로 upgrade하면 위험하지 않나요?**
 
-**Q. SELECT끼리는 동시에 실행되나요?**
+A. 그래서 직접 upgrade하지 않습니다. read lock을 먼저 풀고 write lock을 다시 잡습니다. 직접 upgrade 방식은 deadlock 위험이 있으므로 피했습니다.
 
-A. table이 이미 memory에 로드되어 있으면 SELECT는 read lock이므로 동시에 실행될 수 있습니다. INSERT는 write lock이라 SELECT와 동시에 실행되지 않습니다.
+**Q. INSERT는 왜 write lock인가요?**
 
-**Q. INSERT끼리는 동시에 실행되나요?**
+A. INSERT는 `next_id`, `rows`, B+Tree, CSV storage를 모두 바꿉니다. 동시에 여러 INSERT가 들어오면 id 중복이나 B+Tree 구조 깨짐이 생길 수 있으므로 write lock으로 직렬화합니다.
 
-A. INSERT는 write lock이므로 한 번에 하나만 실행됩니다. 그래야 `next_id`, rows 배열, B+Tree 구조가 깨지지 않습니다.
+**Q. SELECT끼리는 병렬 실행되나요?**
 
-## 6. DB 엔진 연결
+A. table이 이미 load되어 있고 단순 조회라면 read lock으로 여러 SELECT가 동시에 들어올 수 있습니다. 단, 첫 load가 필요한 SELECT는 write lock 경로를 탑니다.
 
-**Q. API 서버와 DB 엔진은 어떻게 연결되어 있나요?**
-
-A. API 서버는 SQL 문자열을 추출한 뒤 `execute_query_with_lock(engine, sql, &result)`를 호출합니다. 이 함수가 lock을 잡고 `db_execute_sql`을 실행합니다. `db_execute_sql`은 `tokenizer -> parser -> executor` 순서로 처리하고 `DbResult`를 채웁니다.
-
-**꼬리질문: 기존 SQL 처리기를 어떻게 API 친화적으로 바꿨나요?**
-
-A. 기존처럼 executor가 바로 `printf`로 출력하면 API 응답으로 쓰기 어렵습니다. 그래서 실행 결과를 `DbResult`에 담도록 `executor_execute_into_result`를 만들고, CLI는 그 결과를 표로 출력하고 API는 JSON으로 변환하게 분리했습니다.
-
-**Q. `DbResult`에는 무엇이 들어가나요?**
-
-A. 성공 여부, 결과 타입, 메시지, SELECT 컬럼/row, row count, affected rows, B+Tree 인덱스 사용 여부가 들어갑니다.
-
-## 7. SQL 처리 흐름
+## 7. 내부 DB 엔진 질문
 
 **Q. SQL 한 문장은 내부에서 어떻게 처리되나요?**
 
-A.
+A. 흐름은 다음과 같습니다.
 
 ```text
 SQL 문자열
@@ -201,112 +254,126 @@ SQL 문자열
 -> parser_parse
 -> SqlStatement
 -> executor_execute_into_result
+-> TableRuntime / B+Tree / Storage
 -> DbResult
 ```
 
-**Q. tokenizer는 무슨 역할인가요?**
+**Q. tokenizer는 무엇을 하나요?**
 
-A. SQL 문자열을 keyword, identifier, literal, operator, 괄호, comma, semicolon 같은 token 배열로 나눕니다.
+A. SQL 문자열을 keyword, identifier, literal, operator, comma, semicolon 같은 token 배열로 나눕니다. 같은 SQL이 반복될 때를 대비해 soft parser cache도 사용합니다.
 
-**꼬리질문: tokenizer cache는 왜 있나요?**
+**Q. parser는 무엇을 하나요?**
 
-A. 같은 SQL 문자열이 반복되면 tokenizing 비용을 줄일 수 있습니다. cache hit 시 token 배열을 새로 분석하지 않고 복사본을 반환합니다.
+A. token 배열을 `SqlStatement` 구조체로 바꿉니다. 예를 들어 SELECT라면 projection column, table name, WHERE 조건을 구조화합니다.
 
-**Q. parser는 무슨 역할인가요?**
+**Q. executor는 무엇을 하나요?**
 
-A. token 배열을 `SqlStatement` 구조체로 변환합니다. 예를 들어 INSERT는 table name, column list, value list로 나누고 SELECT는 projection, table, where 조건으로 나눕니다.
+A. `SqlStatement`를 실제 데이터 처리로 연결합니다. INSERT는 row를 만들고 B+Tree와 CSV에 반영합니다. SELECT는 projection을 준비하고, 조건에 따라 B+Tree 검색 또는 linear scan으로 row를 모아 `DbResult`를 만듭니다.
 
-**Q. executor는 무슨 역할인가요?**
+**Q. 데이터는 어디에 저장되나요?**
 
-A. `SqlStatement`를 실제 데이터 처리로 연결합니다. INSERT면 runtime table에 row를 넣고 storage에 저장합니다. SELECT면 projection을 준비하고 B+Tree 또는 linear scan으로 row를 찾아 `DbResult`를 만듭니다.
+A. 영구 저장은 `data/<table>.csv`입니다. 실행 중에는 현재 활성 table 하나를 `TableRuntime`에 올려서 빠르게 접근하고, `id` 인덱스는 B+Tree로 메모리에 구성합니다.
 
-## 8. B+Tree 인덱스
+**꼬리질문: `data` 파일이 안 보이면 데이터가 없는 건가요?**
 
-**Q. B+Tree를 왜 사용했나요?**
+A. 꼭 그렇지는 않습니다. CSV는 INSERT가 실행될 때 생성됩니다. 또한 `.gitignore`에 `data/*.csv`가 들어 있어서 GitHub에는 데이터 파일이 안 올라갈 수 있습니다. 즉 `data`는 실행 중 생성되는 runtime data 위치입니다.
 
-A. DB 인덱스에서 자주 쓰이는 균형 트리 구조이고, 정렬된 key를 유지하면서 검색 비용을 줄일 수 있습니다. 현재 프로젝트에서는 `id` 값을 key로 해서 row 위치를 빠르게 찾습니다.
+**Q. 현재 table runtime의 한계는?**
 
-**꼬리질문: 이 프로젝트에서 B+Tree는 정확히 무엇을 저장하나요?**
+A. 현재는 활성 table 하나를 memory runtime으로 들고 있습니다. 다른 table을 요청하면 기존 runtime을 비우고 새 table을 load합니다. 여러 table을 동시에 메모리에 유지하려면 table registry가 필요합니다.
 
-A. `id -> row_index`를 저장합니다. `id`는 자동 증가 값이고, `row_index`는 `TableRuntime.rows` 배열에서 해당 row의 위치입니다.
+## 8. B+Tree 인덱스 질문
+
+**Q. B+Tree는 왜 사용했나요?**
+
+A. DB 인덱스에서 많이 쓰이는 균형 트리 구조이고, 정렬된 key를 기반으로 빠르게 검색할 수 있습니다. 과제 요구사항도 이전 차수의 B+Tree를 활용하는 것이어서 `id` 조회 최적화에 사용했습니다.
+
+**Q. 우리 프로젝트에서 B+Tree에는 무엇이 저장되나요?**
+
+A. `id -> row_index`가 저장됩니다. `id`는 자동 증가 key이고, `row_index`는 `TableRuntime.rows` 배열에서 해당 row의 위치입니다.
 
 **Q. 언제 B+Tree를 사용하나요?**
 
-A. SELECT에 WHERE가 있고 조건이 정확히 `id = 정수` 형태일 때만 사용합니다.
+A. SELECT의 WHERE 조건이 정확히 `id = 정수` 형태일 때 사용합니다.
 
 ```sql
 SELECT name FROM users WHERE id = 1;
 ```
 
-이 경우 `executor_can_use_id_index`가 true를 반환하고 `bptree_search`를 호출합니다.
+이 경우 `executor_can_use_id_index`가 true를 반환하고 `bptree_search`로 row_index를 찾습니다.
 
-**꼬리질문: 다른 컬럼 WHERE는 왜 B+Tree를 안 쓰나요?**
+**꼬리질문: 다른 컬럼 조건에서는 왜 B+Tree를 안 쓰나요?**
 
-A. 현재 B+Tree는 id 전용 인덱스로 설계되어 있습니다. 다른 컬럼은 schema마다 다르고 중복 값도 많을 수 있어서 column별 index registry가 필요합니다. 이번 과제 범위에서는 기존 B+Tree 인덱스를 활용하는 것을 우선해 id exact lookup에 집중했습니다.
+A. 현재 B+Tree는 `id` 전용 인덱스입니다. 다른 컬럼은 중복 값이 있을 수 있고 column별 index registry가 필요합니다. 이번 과제에서는 기존 B+Tree를 확실히 재사용하는 데 집중해 `id` exact lookup만 최적화했습니다.
 
-**Q. B+Tree가 실제로 사용됐는지 어떻게 확인하나요?**
+**Q. B+Tree를 실제로 썼는지 어떻게 확인하나요?**
 
-A. API SELECT 응답에 `"used_id_index": true`가 들어갑니다. API smoke test에서도 이 값을 검증합니다.
+A. API SELECT 응답에 `"used_id_index": true`가 들어갑니다. 테스트에서도 `WHERE id` 조회 시 이 값이 true인지 확인합니다.
 
-**Q. B+Tree 삽입 중 leaf가 꽉 차면 어떻게 하나요?**
+**꼬리질문: hash table이 더 빠르지 않나요?**
 
-A. `bptree_split_leaf`가 새 leaf를 만들고 key를 절반으로 나눈 뒤, 새 leaf의 첫 key를 parent로 올립니다. parent도 꽉 차면 `bptree_split_internal`로 internal node를 분할합니다.
+A. 단순 equality lookup만 보면 hash table도 좋은 선택입니다. 하지만 과제 요구사항이 B+Tree 재사용이었고, B+Tree는 정렬된 key 기반이라 이후 range query로 확장하기 좋습니다.
 
-## 9. TableRuntime과 Storage
+## 9. 지원 SQL과 한계 질문
 
-**Q. 데이터는 어디에 저장되나요?**
+**Q. 어떤 SQL을 지원하나요?**
 
-A. 영구 저장은 `data/<table>.csv` 파일에 합니다. 실행 중에는 현재 활성 table 하나를 `TableRuntime`에 메모리로 올려 사용합니다.
-
-**꼬리질문: 서버를 껐다 켜면 데이터가 유지되나요?**
-
-A. 네. CSV 파일에 저장되므로 유지됩니다. 다음에 같은 table을 조회하거나 INSERT하면 `table_load_from_storage_if_needed`가 CSV를 읽어 runtime table과 B+Tree를 재구성합니다.
-
-**Q. 왜 메모리에도 올리고 CSV에도 저장하나요?**
-
-A. CSV는 persistence를 위한 저장소이고, 메모리는 빠른 SELECT와 B+Tree 인덱스 사용을 위한 runtime 상태입니다.
-
-**Q. 현재 table runtime의 한계는?**
-
-A. 전역 활성 table 하나만 유지합니다. 여러 table을 번갈아 요청하면 기존 table runtime을 비우고 새 table을 로드합니다. 포트폴리오용 확장으로는 table registry를 만들어 여러 table runtime을 동시에 유지할 수 있습니다.
-
-**Q. `id`는 어떻게 생성하나요?**
-
-A. runtime table의 `next_id`가 자동 증가합니다. 첫 INSERT에서 schema 앞에 `id` 컬럼을 붙이고, row를 넣을 때마다 `next_id`를 문자열로 변환해 첫 컬럼에 저장합니다.
-
-**꼬리질문: 명시적으로 id를 넣으면?**
-
-A. 현재 runtime executor 경로에서는 명시적 `id` 삽입을 허용하지 않습니다. `table_initialize_schema`에서 INSERT 컬럼 중 `id`가 있으면 실패 처리합니다.
-
-## 10. DELETE 관련 질문
+A. 현재 핵심 지원은 INSERT와 SELECT입니다. SELECT는 전체 조회, 특정 컬럼 projection, 일반 WHERE 조건, `WHERE id = n` 인덱스 조회를 지원합니다.
 
 **Q. DELETE는 지원하나요?**
 
-A. parser와 storage 계층에는 DELETE 관련 구현이 일부 있지만, 현재 메모리 runtime executor에서는 DELETE를 지원하지 않습니다. 실행하면 `DELETE is not supported in memory runtime mode.` 에러를 반환합니다.
+A. parser와 일부 storage 테스트에는 DELETE 흐름이 있지만, 현재 memory runtime executor에서는 지원하지 않습니다. 실행하면 `"DELETE is not supported in memory runtime mode."` 에러를 반환합니다.
 
-**꼬리질문: 왜 막았나요?**
+**꼬리질문: 왜 DELETE를 미지원으로 뒀나요?**
 
-A. DELETE를 완전히 지원하려면 CSV 삭제뿐 아니라 runtime rows 배열, row_index, B+Tree 인덱스까지 일관되게 갱신해야 합니다. 현재 과제 핵심은 API 서버, thread pool, 기존 SQL/B+Tree 연결이므로 DELETE는 명확히 미지원으로 처리했습니다.
+A. DELETE를 제대로 하려면 CSV뿐 아니라 memory rows, row_index, B+Tree까지 일관되게 갱신해야 합니다. 특히 row를 물리 삭제하면 row_index가 바뀌므로 B+Tree 전체 재구성이 필요합니다. 이번 과제의 핵심은 API 서버, thread pool, 내부 엔진 연결이라 DELETE는 명확히 unsupported로 처리했습니다.
 
-**꼬리질문: 나중에 구현한다면 어떻게 하나요?**
+**Q. transaction은 있나요?**
 
-A. 두 가지 방식이 있습니다.
+A. 없습니다. 현재는 SQL 한 문장 단위 실행입니다. rollback, commit, isolation level 같은 transaction 기능은 지원하지 않습니다.
 
-- physical delete: rows 배열에서 제거하고 모든 row_index와 B+Tree를 재구성
-- logical delete: deleted flag를 두고 SELECT에서 제외
+**Q. JOIN은 되나요?**
 
-현재 구조에서는 단순하고 안전한 방법은 DELETE 후 table을 storage에서 다시 load하면서 B+Tree를 재구성하는 방식입니다.
+A. 지원하지 않습니다. 현재는 단일 table 중심의 INSERT/SELECT 기능입니다.
 
-## 11. 테스트와 검증
+**Q. 보안은 고려했나요?**
+
+A. 인증, 권한, TLS는 과제 범위 밖이라 구현하지 않았습니다. 로컬 데모와 기능 검증용 API 서버입니다. 운영 환경이라면 인증, TLS, request size 제한, SQL 권한 제어가 필요합니다.
+
+## 10. 왜 이렇게 설계했는지
+
+**Q. 왜 직접 socket 서버를 만들었나요?**
+
+A. 구현 언어가 C이고, 과제 중점이 API 서버 아키텍처와 thread pool, 동시성 이슈였기 때문입니다. socket을 직접 다루면 accept loop, worker 분배, queue full 처리 같은 서버 구조를 명확히 보여줄 수 있습니다.
+
+**Q. 왜 외부 JSON 라이브러리를 안 썼나요?**
+
+A. 현재 API body는 `{"sql":"..."}` 하나만 필요합니다. 그래서 과제 범위에서는 `"sql"` string field만 추출하는 작은 parser로 충분하다고 판단했습니다. 다만 production 수준이라면 cJSON 같은 검증된 JSON parser를 쓰는 것이 더 안전합니다.
+
+**Q. 왜 stdout 출력 대신 `DbResult`를 만들었나요?**
+
+A. CLI는 터미널 출력이 필요하지만 API 서버는 JSON 응답이 필요합니다. executor가 바로 `printf`하면 API로 재사용하기 어렵습니다. 그래서 실행 결과를 `DbResult`로 구조화하고, CLI와 API가 각각 원하는 방식으로 렌더링하도록 분리했습니다.
+
+**Q. 왜 queue full에서 기다리지 않고 503을 반환하나요?**
+
+A. 서버가 감당할 수 없는 요청을 계속 쌓으면 메모리와 socket 자원이 고갈될 수 있습니다. queue capacity를 넘으면 빠르게 실패시키는 정책이 과부하 상황에서 더 예측 가능하고 테스트하기도 좋습니다.
+
+**Q. worker 수를 늘리면 항상 성능이 좋아지나요?**
+
+A. 아닙니다. 특히 INSERT는 DB write lock을 잡기 때문에 worker가 많아도 실제 DB 변경 구간은 직렬화됩니다. 부하 테스트에서 worker/queue를 늘려도 처리량이 크게 늘지 않는다면 병목이 thread pool이 아니라 DB write lock 구간이라는 뜻입니다.
+
+## 11. 테스트와 품질 질문
 
 **Q. 어떤 테스트를 작성했나요?**
 
 A. 크게 네 종류입니다.
 
-- DB 단위 테스트: tokenizer, parser, storage, executor, B+Tree, facade
-- 동시성 테스트: thread pool, tokenizer cache thread safety
-- 통합 테스트: SQL 파일을 `sql_processor`로 실행
-- API 테스트: health, query, 동시 INSERT, 병렬 SELECT
+| 테스트 종류 | 확인 내용 |
+| --- | --- |
+| DB 단위 테스트 | tokenizer, parser, storage, B+Tree, executor, facade |
+| concurrency 테스트 | thread pool, tokenizer cache thread safety |
+| integration 테스트 | `.sql` 파일을 CLI로 실행 |
+| API 테스트 | `/health`, `/query`, 동시 INSERT, 병렬 SELECT |
 
 **Q. 전체 테스트 명령어는?**
 
@@ -314,86 +381,89 @@ A. 크게 네 종류입니다.
 make tests
 ```
 
-**Q. API 서버 기능 테스트는 어떻게 하나요?**
-
-```bash
-bash tests/api/test_api_smoke.sh
-bash tests/api/test_api_concurrency_smoke.sh
-bash tests/api/test_api_parallel_select_smoke.sh
-```
-
-**꼬리질문: 동시성 테스트는 무엇을 확인하나요?**
-
-A. `test_api_concurrency_smoke.sh`는 여러 INSERT 요청을 동시에 보내고 최종 row count가 맞는지 확인합니다. `test_api_parallel_select_smoke.sh`는 여러 SELECT 요청이 동시에 성공하고 row count가 일관적인지 확인합니다.
-
-**Q. edge case는 어떤 것을 고려했나요?**
-
-A. 잘못된 SQL, 누락된 semicolon, 없는 route, 잘못된 method, JSON body에 `sql` 필드 없음, explicit id 삽입 거부, 문자열에 comma 포함, DELETE 미지원, queue full 상황, 동시 요청 상황을 고려했습니다.
-
-## 12. 성능과 병목
-
-**Q. B+Tree 사용으로 어떤 성능 개선이 있나요?**
-
-A. `WHERE id = ?` 조회에서 전체 rows를 훑지 않고 B+Tree로 row index를 찾습니다. 데이터가 많아질수록 선형 탐색 대비 조회 비용 차이가 커집니다. benchmark 모드에서 B+Tree lookup과 linear scan lookup 시간을 비교할 수 있습니다.
-
-**Q. 병목은 어디인가요?**
-
-A. 현재 구조에서 병목은 크게 세 가지입니다.
-
-- INSERT는 write lock으로 직렬화됨
-- runtime table이 하나라 multi-table workload에 약함
-- JSON parser와 HTTP parser가 MVP 수준이라 복잡한 요청 처리에는 부적합
-
-**꼬리질문: 개선한다면?**
-
-A. table별 lock과 table registry를 도입하고, column별 index를 관리하며, HTTP/JSON 처리는 검증된 라이브러리나 더 완전한 parser로 확장할 수 있습니다.
-
-## 13. 설계 선택 질문
-
-**Q. 왜 직접 HTTP 서버를 만들었나요?**
-
-A. 과제 구현 언어가 C이고 API 서버 아키텍처, thread pool, 동시성 이슈를 직접 다루는 것이 중점이어서 socket 기반으로 직접 구현했습니다.
-
-**Q. 왜 완전한 JSON parser를 쓰지 않았나요?**
-
-A. MVP 요구는 SQL 문자열 하나를 받는 것이므로 `"sql"` string field만 추출하는 작은 parser로 충분하다고 판단했습니다. 다만 production 수준이라면 cJSON 같은 검증된 JSON parser를 쓰는 것이 더 안전합니다.
-
-**Q. 왜 stdout 출력 대신 `DbResult`를 만들었나요?**
-
-A. API 서버는 stdout 문자열보다 구조화된 결과가 필요합니다. `DbResult`를 만들면 CLI는 표로 렌더링하고 API는 JSON으로 렌더링할 수 있어 실행 로직과 표현 로직이 분리됩니다.
-
-**Q. 왜 queue full 때 기다리지 않고 503을 반환하나요?**
-
-A. 과부하 상황에서 client connection을 무한히 붙잡지 않고 빠르게 실패시키면 서버 자원을 보호할 수 있습니다. 또한 테스트와 데모에서 동작이 명확합니다.
-
-## 14. 발표 데모 흐름
-
-4분 발표라면 이 순서를 추천합니다.
-
-1. 한 문장 소개: "기존 SQL 처리기에 API 서버와 thread pool을 붙인 C 기반 mini DBMS입니다."
-2. 아키텍처 그림 또는 README 흐름 설명
-3. 서버 실행
+**Q. API 서버 실행 명령어는?**
 
 ```bash
 make
 ./api_server 8080 4 16
 ```
 
-4. health check
+여기서 `8080`은 port, `4`는 worker 수, `16`은 queue capacity입니다.
+
+**Q. CLI 실행 명령어는?**
+
+```bash
+./sql_processor
+./sql_processor tests/integration/test_cases/basic_insert.sql
+```
+
+**Q. 부하 테스트는 무엇을 확인했나요?**
+
+A. `scripts/k6_queue_health_demo.js`로 많은 `/query` 요청을 넣고, `/health`로 worker와 queue 상태를 관찰했습니다. 이를 통해 “worker 수 문제인지, queue 문제인지, DB write lock 병목인지”를 구분하려고 했습니다.
+
+**Q. 엣지 케이스는 무엇을 고려했나요?**
+
+A. 잘못된 SQL, 잘못된 route, 잘못된 method, JSON body에 `sql` 없음, explicit id 삽입 거부, 문자열 안 comma 처리, DELETE unsupported, queue full, 동시 INSERT/SELECT 상황을 고려했습니다.
+
+## 12. 자주 나올 꼬리질문 빠른 답변
+
+**Q. 이게 진짜 DBMS인가요?**
+
+A. production DBMS는 아니고 mini DBMS입니다. 그래도 SQL 파싱, 실행, 저장, 인덱스, API 서버, 동시성 제어라는 DBMS 핵심 요소를 작게 연결했습니다.
+
+**Q. race condition이 완전히 없다고 말할 수 있나요?**
+
+A. 과제 범위에서 확인한 공유 자원은 lock으로 보호했습니다. 다만 production 수준의 검증은 더 긴 stress test와 sanitizer, 더 많은 장애 케이스 테스트가 필요합니다.
+
+**Q. API 요청은 정말 병렬 처리되나요?**
+
+A. 네. 여러 client 연결은 thread pool worker가 병렬로 처리합니다. 다만 DB 내부에서 write lock이 필요한 구간은 정합성을 위해 직렬화됩니다.
+
+**Q. `/health`는 thread pool을 안 타는데 요구사항과 충돌하지 않나요?**
+
+A. 핵심 SQL 요청인 `/query`는 thread pool을 탑니다. `/health`는 서버 관찰용 endpoint라 queue가 꽉 찬 상황에서도 상태를 확인할 수 있도록 fast path로 처리했습니다. 기능 요구사항과 운영 관찰성을 함께 고려한 선택입니다.
+
+**Q. CSV와 B+Tree가 불일치하면 어떻게 하나요?**
+
+A. table load 시 CSV를 기준으로 memory rows와 B+Tree를 다시 구성합니다. INSERT 중 storage 저장이 실패하면 runtime table을 unloaded 상태로 되돌리고 storage에서 다시 load하려고 합니다.
+
+**Q. 가장 어려웠던 부분은?**
+
+A. 기존 SQL 처리기가 CLI 출력 중심이었기 때문에 API 응답으로 쓰기 어려웠습니다. 그래서 executor 결과를 `DbResult`로 구조화하고 CLI/API 렌더링을 분리한 부분이 핵심 설계 포인트였습니다.
+
+**Q. 개선한다면 무엇을 먼저 하겠나요?**
+
+A. table registry를 만들어 여러 table runtime을 동시에 유지하고, table별 lock을 적용해 병렬성을 높이겠습니다. 그 다음 DELETE의 B+Tree 재구성, secondary index, production 수준 JSON parser를 추가하겠습니다.
+
+## 13. 데모용 명령어 모음
+
+빌드:
+
+```bash
+make
+```
+
+서버 실행:
+
+```bash
+./api_server 8080 4 16
+```
+
+health check:
 
 ```bash
 curl -i http://127.0.0.1:8080/health
 ```
 
-5. INSERT
+INSERT:
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/query \
   -H "Content-Type: application/json" \
-  --data '{"sql":"INSERT INTO demo_users (name, age) VALUES ('\''Alice'\'', 30);"}'
+  --data '{"sql":"INSERT INTO demo_users (name, age) VALUES (\"Alice\", 30);"}'
 ```
 
-6. SELECT with B+Tree
+B+Tree 사용 SELECT:
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/query \
@@ -401,49 +471,20 @@ curl -i -X POST http://127.0.0.1:8080/query \
   --data '{"sql":"SELECT id, name FROM demo_users WHERE id = 1;"}'
 ```
 
-여기서 `"used_id_index":true`를 보여줍니다.
+응답에서 확인할 부분:
 
-7. 테스트 검증 언급
+```json
+{
+  "ok": true,
+  "type": "select",
+  "used_id_index": true,
+  "row_count": 1
+}
+```
+
+전체 테스트:
 
 ```bash
 make tests
 ```
-
-## 15. 자주 나올 꼬리질문 빠른 답변
-
-**Q. 이게 진짜 DBMS인가요?**
-
-A. production DBMS는 아니고 과제 범위의 mini DBMS입니다. SQL parsing, execution, storage, index, API server, concurrency 제어라는 DBMS 핵심 요소를 작게 구현한 것입니다.
-
-**Q. transaction은 있나요?**
-
-A. 없습니다. 현재는 SQL 한 문장 단위 실행이고, transaction isolation/rollback은 지원하지 않습니다.
-
-**Q. JOIN은 지원하나요?**
-
-A. 지원하지 않습니다. 현재는 단일 table의 INSERT, SELECT 중심입니다.
-
-**Q. 여러 SQL 문장을 한 API 요청으로 실행할 수 있나요?**
-
-A. 현재 API는 SQL 문자열 하나 실행을 전제로 합니다. CLI file mode는 세미콜론 기준으로 여러 문장을 순차 실행할 수 있습니다.
-
-**Q. 보안은 고려했나요?**
-
-A. 인증, TLS, 권한 관리는 과제 범위 밖이라 구현하지 않았습니다. 다만 로컬 데모와 기능 검증을 위한 API 서버로 설계했습니다.
-
-**Q. race condition이 정말 없나요?**
-
-A. 공유 DB 상태 접근은 lock manager로 보호하고, tokenizer cache는 별도 mutex로 보호합니다. 다만 production 수준 검증은 더 많은 stress test가 필요합니다. 현재 과제 요구 수준에서는 동시 INSERT/SELECT smoke test로 기본 안정성을 검증했습니다.
-
-**Q. B+Tree와 CSV 저장소가 불일치하면 어떻게 하나요?**
-
-A. 서버 시작 또는 table load 시 CSV를 기준으로 runtime rows와 B+Tree를 재구성합니다. INSERT 중 CSV 저장 실패가 발생하면 runtime table을 unloaded로 되돌리고 storage에서 다시 로드하려고 시도합니다.
-
-**Q. 가장 어려웠던 부분은?**
-
-A. 기존 SQL 처리기는 CLI 출력 중심이었기 때문에 API 응답으로 쓰기 어려웠습니다. 그래서 executor 결과를 `DbResult`로 구조화하고, CLI/API 렌더링을 분리한 부분이 핵심 설계 포인트였습니다.
-
-**Q. 포트폴리오에 어필할 포인트는?**
-
-A. C socket 서버, thread pool, bounded queue, rwlock 기반 동시성 제어, SQL parser/executor, B+Tree index, CSV persistence, API 테스트까지 하나의 작은 시스템으로 연결했다는 점입니다.
 
